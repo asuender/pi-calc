@@ -6,35 +6,73 @@
 #include <mutex>
 #include <numeric>
 #include <vector>
+#include <mpreal.h>
+#include <string>
+#include <fstream>
+#include <sstream>
 
 std::mutex prtnmutex;
+std::mutex cntmutex;
+using mpfr::mpreal;
+
+size_t digits = 100000;
 
 class Pi {
     private:
         unsigned long long numDigits; // count calculated digits
+        mpreal PI;
+        size_t tmpProc = 0;
+        time_t start = time(nullptr);
+
     public:
-        static int cores;
+        static size_t cores;
 
         // constructor
         Pi() { numDigits = 0; }
 
-        long double calc(int digits);
-        void pi(std::promise<long double> P, unsigned digits, int procnum, int cores);
+        mpreal calc(int digits);
+        void pi(std::promise<mpreal> P, unsigned digits, int procnum, int cores);
         void print();
+        int writeToFile(const char * fileName);
 };
+
+int Pi::writeToFile(const char * fileName) {
+    try {
+        FILE* file = fopen(fileName, "w+");
+        mpfr_fprintf(file,("%."+std::to_string(digits)+"Rf").c_str(),PI);
+        fclose(file);
+        return 0;
+    }
+    catch (const std::exception &e) {
+        std::cout << e.what() << std::endl;
+        return 1;
+    }
+}
 
 void Pi::print() {
     prtnmutex.lock();
-    std::cout << "\r\033[Kdigits calculated: " << numDigits << std::flush;
+    if ((100*numDigits)/digits != tmpProc) {
+        std::cout << "\r" << (100*numDigits)/digits << " %" << std::flush;
+        tmpProc = (100*numDigits)/digits;
+    }
+    std::cout << "\r\033["+std::to_string(6)+"C" << time(nullptr)-start << " sec." << std::flush;
     prtnmutex.unlock();
+
+    std::ofstream file("index.html");
+    file.write("Hello", 5);
+    file.close();
 }
 
-void Pi::pi(std::promise<long double> P, unsigned digits, int procnum, int cores) {
+void Pi::pi(std::promise<mpreal> P, unsigned digits, int procnum, int cores) {
+    mpreal::set_default_prec(mpfr::digits2bits(digits+80));
     try {
-        long double result = 0.0;
-        for (size_t i=procnum; i<digits; i+=cores) {
-            result += (1.0/std::pow(16.0, double(i))) * ( (4.0/(8.0*i+1.0))-(2.0/(8.0*i+4.0))-(1.0/(8.0*i+5.0))-(1.0/(8.0*i+6.0)) );
+        mpreal result=0;
+
+        for (mpreal i=procnum; i<digits; i+=cores) {
+            result += mpfr::pow(16,-i)*(4/(8*i+1) - 2/(8*i+4) - 1/(8*i+5) - 1/(8*i+6));
+            cntmutex.lock();
             numDigits += 1;
+            cntmutex.unlock();
             print();
         }
         P.set_value(result); 
@@ -44,13 +82,16 @@ void Pi::pi(std::promise<long double> P, unsigned digits, int procnum, int cores
     }
 }
 
-long double Pi::calc(int digits) {
-    long double pi = 0.0;
+mpreal Pi::calc(int digits) {
+    mpreal::set_default_prec(mpfr::digits2bits(digits+80));
+    mpreal pi = 0.0;
     
-    std::vector<std::pair<std::future<long double>,std::thread>> threads;
+    std::cout << "\r" << 0 << " %" << std::flush;
+
+    std::vector<std::pair<std::future<mpreal>,std::thread>> threads;
     for(size_t i=0;i<cores;i++) {
-        std::promise<long double> Px;
-        std::future<long double> Fx = Px.get_future();
+        std::promise<mpreal> Px;
+        std::future<mpreal> Fx = Px.get_future();
         std::thread Tx {&Pi::pi, this, std::move(Px), digits,i,this->cores};
         threads.push_back(std::make_pair(std::move(Fx),std::move(Tx)));
     }
@@ -58,19 +99,26 @@ long double Pi::calc(int digits) {
         threads[i].second.join();
         pi+=threads[i].first.get();
     }
+    PI = pi;
     std::cout << "\n\n";
     return pi;
 }
 
 
-int Pi::cores = std::thread::hardware_concurrency();
+size_t Pi::cores = std::thread::hardware_concurrency();
 
-int main()  {
-    std::cout << std::setprecision(30) << std::fixed;
+int main(int argc, char * argv[])  {
+    //set value from terminal argument, otherwise use default 10 000
+    if (argc > 0) {
+        std::stringstream tmpValue (argv[1]);
+        tmpValue >> digits;
+    }
 
     std::cout << "Starting." << std::endl;
     Pi pi {};
     std::cout << "Using " << pi.cores << " cores." << "\n\n";
-    long double result = pi.calc(20);
-    std::cout << "\u03C0 = " << result << std::endl;
+    mpreal result = pi.calc(digits);
+    pi.writeToFile("_pi");
+    mpfr_printf(("\u03C0 = %." + std::to_string(digits) + "RZf").c_str(), result);
+    std::cout << std::endl;
 }
